@@ -26,7 +26,7 @@ class CustomImageDataset(Dataset):
         return image, img_path  # Return image tensor and its path
 
 # Set paths
-base_dir = "clipTrial/archive/coco128"
+base_dir = "coco128"
 image_dir = os.path.join(base_dir, 'images', 'train2017')
 
 # Image transform for dataset
@@ -63,14 +63,21 @@ index = faiss.IndexFlatL2(dimension)
 index.add(image_embeddings)
 
 # Search function
-def search_similar_images(query_image, k=5):
-    image_tensor = preprocess(query_image).unsqueeze(0).to(device)
-    with torch.no_grad():
-        query_embedding = model.encode_image(image_tensor)
-        query_embedding /= query_embedding.norm(dim=-1, keepdim=True)
-        query_embedding = query_embedding.cpu().numpy()
+def search_similar_images(query, k=5):
+    if isinstance(query, Image.Image):  # Image input
+        image_tensor = preprocess(query).unsqueeze(0).to(device)
+        with torch.no_grad():
+            query_embedding = model.encode_image(image_tensor)
+    else:  # Text input
+        text_tokens = clip.tokenize([query]).to(device)
+        with torch.no_grad():
+            query_embedding = model.encode_text(text_tokens)
+
+    query_embedding /= query_embedding.norm(dim=-1, keepdim=True)
+    query_embedding = query_embedding.cpu().numpy()
     D, I = index.search(query_embedding, k)
     return I[0]
+
 
 # Gradio function
 def search_and_display(query_image):
@@ -80,11 +87,34 @@ def search_and_display(query_image):
         result_images.append(Image.open(image_paths[idx]))
     return [query_image] + result_images
 
+def image_text_search(query_input):
+    # query_input could be either an image or a string
+    indices = search_similar_images(query_input)
+    result_images = [Image.open(image_paths[idx]) for idx in indices]
+    if isinstance(query_input, Image.Image):
+        return [query_input] + result_images
+    else:
+        return result_images  # No need to include text input in output
+
+
 # Launch Gradio
+def unified_search(text_query, image_query):
+    if image_query is not None:
+        return search_and_display(image_query)
+    elif text_query.strip() != "":
+        indices = search_similar_images(text_query)
+        return [Image.open(image_paths[idx]) for idx in indices]
+    else:
+        return []
+
 gr.Interface(
-    fn=search_and_display,
-    inputs=gr.Image(type="pil", label="Upload a query image"),
-    outputs=[gr.Image(label=f"Image {i}") for i in range(6)],
-    title="CLIP Image-to-Image Search",
-    description="Upload a COCO image and retrieve visually similar images using CLIP + FAISS"
+    fn=unified_search,
+    inputs=[
+        gr.Textbox(label="Text Query (e.g., 'pizza')", placeholder="Leave empty if uploading an image"),
+        gr.Image(type="pil", label="Or upload an image")
+    ],
+    outputs=[gr.Image(label=f"Result {i+1}") for i in range(5)],
+    title="CLIP Image & Text Search",
+    description="Search for similar images using text (like 'dog', 'pizza') or upload an image."
 ).launch()
+
